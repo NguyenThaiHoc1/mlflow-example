@@ -127,6 +127,6 @@ def set_env_vars():
 
 
 if __name__ == '__main__':
-    set_env_vars()
+#     set_env_vars()
     args = parser_args()
     run(raw_data_path=args.pickle_folder)
