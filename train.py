@@ -119,14 +119,6 @@ def run(raw_data_path, log_top=3):
     mlflow.end_run()
 
 
-def set_env_vars():
-    os.environ["MLFLOW_URL"] = "http://localhost:5000"
-    os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://localhost:9000"
-    os.environ["AWS_ACCESS_KEY_ID"] = "admin"
-    os.environ["AWS_SECRET_ACCESS_KEY"] = "hocmap123"
-
-
 if __name__ == '__main__':
-#     set_env_vars()
     args = parser_args()
     run(raw_data_path=args.pickle_folder)
