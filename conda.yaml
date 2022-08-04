@@ -9,3 +9,4 @@ dependencies:
   - pip:
     - mlflow
     - hyperopt
+    - boto3
