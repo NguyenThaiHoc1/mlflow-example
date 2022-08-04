@@ -1,26 +1,122 @@
-# The data set used in this example is from http://archive.ics.uci.edu/ml/datasets/Wine+Quality
-# P. Cortez, A. Cerdeira, F. Almeida, T. Matos and J. Reis.
-# Modeling wine preferences by data mining from physicochemical properties. In Decision Support Systems, Elsevier, 47(4):547-553, 2009.
-
+"""
+https://medium.com/swlh/mlflow-with-minio-special-guest-apache-spark-9295d05a012e
+"""
 import os
-import warnings
-import sys
-
-import pandas as pd
-import numpy as np
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import ElasticNet
+import argparse
+import os.path
+import pickle
+from hyperopt import (
+    hp, space_eval,
+)
+from hyperopt.pyll import scope
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
 
 import mlflow
-import mlflow.sklearn
+from mlflow.tracking import MlflowClient
+from mlflow.entities import ViewType
+
+HPO_EXPERIMENT_NAME = "random-forest-hyperopt"
+EXPERIMENT_NAME = "test-model-v21"
+
+# auto logging
+mlflow.end_run()
+
+# PARAMS
+PARAMS = {
+    'n_estimators': scope.int(hp.quniform('n_estimators', 10, 50, 1)),
+    'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
+    'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 4, 1)),
+    'min_samples_split': scope.int(hp.quniform('min_samples_split', 2, 10, 1)),
+    'random_state': 42
+}
 
 
-def eval_metrics(actual, pred):
-    rmse = np.sqrt(mean_squared_error(actual, pred))
-    mae = mean_absolute_error(actual, pred)
-    r2 = r2_score(actual, pred)
-    return rmse, mae, r2
+def parser_args():
+    parameter_args = argparse.ArgumentParser(description="Hyper optimizer")
+    parameter_args.add_argument("--pickle_folder", help="Contains data raw", required=True)
+    return parameter_args.parse_args()
+
+
+def load_pickle(path_filename):
+    with open(path_filename, 'rb') as f:
+        return pickle.load(f)
+
+
+def train_and_log_model(data_path, params, exp_id):
+    train_data = load_pickle(
+        path_filename=os.path.join(data_path, "train.pkl")
+    )
+    validate_data = load_pickle(
+        path_filename=os.path.join(data_path, "validate.pkl")
+    )
+    test_data = load_pickle(
+        path_filename=os.path.join(data_path, "test.pkl")
+    )
+
+    x_train, y_train = train_data
+    x_val, y_val = validate_data
+    x_test, y_test = test_data
+
+    with mlflow.start_run(experiment_id=exp_id, nested=True):
+        params = space_eval(PARAMS, params)  # cái này dùng để thay thể cho fmin truyền thống của hyper optimizer
+        rf = RandomForestRegressor(**params)
+        rf.fit(x_train, y_train)
+
+        valid_rmse = mean_squared_error(y_val, rf.predict(x_val), squared=False)
+        mlflow.log_metric("valid_rmse", valid_rmse)
+
+        test_rmse = mean_squared_error(y_test, rf.predict(x_test), squared=False)
+        mlflow.log_metric("test_rmse", test_rmse)
+
+        mlflow.sklearn.log_model(rf, artifact_path='model')
+
+
+def run(raw_data_path, log_top=3):
+    # link_db = 'postgresql://thaihoc:hocmap123@localhost:3000/mlops_db'
+    link_db = 'http://127.0.0.1:5000'
+    mlflow.set_tracking_uri(uri=link_db)
+    print(f"tracking_uri: {mlflow.get_tracking_uri()}")
+    print(f"artifact_uri: {mlflow.get_artifact_uri()}")
+    print(mlflow.list_experiments())
+
+    client = MlflowClient(tracking_uri=link_db)
+    # retrieve the top_n model runs and log the models to MLflow
+    experiment = client.get_experiment_by_name(HPO_EXPERIMENT_NAME)
+    runs = client.search_runs(
+        experiment_ids=experiment.experiment_id,
+        run_view_type=ViewType.ACTIVE_ONLY,
+        max_results=log_top,
+        order_by=["metrics.val_rmse ASC"]
+    )
+
+    try:
+        exp_id = mlflow.create_experiment(name=EXPERIMENT_NAME)
+    except Exception as e:
+        exp_id = mlflow.get_experiment_by_name(name=EXPERIMENT_NAME).experiment_id
+
+    mlflow.set_experiment(experiment_id=exp_id)
+
+    for run in runs:
+        # print(f"run id: {run.info.run_id}, rmse: {run.data.metrics['val_rmse']:.4f}")
+        train_and_log_model(data_path=raw_data_path, params=run.data.params, exp_id=exp_id)
+
+    experiment = client.get_experiment_by_name(EXPERIMENT_NAME)
+    best_run = client.search_runs(
+        experiment_ids=experiment.experiment_id,
+        run_view_type=ViewType.ACTIVE_ONLY,
+        max_results=3,
+        order_by=["metrics.test_rmse ASC"]
+    )[0]
+
+    # register the best model
+    print(f"run id: {best_run.info.run_id}, test_rmse: {best_run.data.metrics['test_rmse']:.4f}")
+    model_uri = f"runs:/{best_run.info.run_id}/model"
+
+    # cách 1: sử dụng mlflow
+    mlflow.register_model(model_uri=model_uri, name="test-model-rf")
+    print("DONE ...")
+    mlflow.end_run()
 
 
 def set_env_vars():
@@ -28,47 +124,9 @@ def set_env_vars():
     os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://localhost:9000"
     os.environ["AWS_ACCESS_KEY_ID"] = "admin"
     os.environ["AWS_SECRET_ACCESS_KEY"] = "hocmap123"
-    
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     set_env_vars()
-    warnings.filterwarnings("ignore")
-    np.random.seed(40)
-
-    # Read the wine-quality csv file (make sure you're running this from the root of MLflow!)
-    wine_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wine-quality.csv")
-    data = pd.read_csv(wine_path)
-
-    # Split the data into training and test sets. (0.75, 0.25) split.
-    train, test = train_test_split(data)
-
-    # The predicted column is "quality" which is a scalar from [3, 9]
-    train_x = train.drop(["quality"], axis=1)
-    test_x = test.drop(["quality"], axis=1)
-    train_y = train[["quality"]]
-    test_y = test[["quality"]]
-
-    alpha = float(sys.argv[1]) if len(sys.argv) > 1 else 0.5
-    l1_ratio = float(sys.argv[2]) if len(sys.argv) > 2 else 0.5
-
-    with mlflow.start_run():
-        lr = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, random_state=42)
-        lr.fit(train_x, train_y)
-
-        predicted_qualities = lr.predict(test_x)
-
-        (rmse, mae, r2) = eval_metrics(test_y, predicted_qualities)
-
-        print("Elasticnet model (alpha=%f, l1_ratio=%f):" % (alpha, l1_ratio))
-        print("  RMSE: %s" % rmse)
-        print("  MAE: %s" % mae)
-        print("  R2: %s" % r2)
-
-        mlflow.log_param("alpha", alpha)
-        mlflow.log_param("l1_ratio", l1_ratio)
-        mlflow.log_metric("rmse", rmse)
-        mlflow.log_metric("r2", r2)
-        mlflow.log_metric("mae", mae)
-
-        mlflow.sklearn.log_model(lr, "model1")
-        print("DONE")
+    args = parser_args()
+    run(raw_data_path=args.pickle_folder)
