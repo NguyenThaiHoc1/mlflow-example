@@ -23,8 +23,15 @@ def eval_metrics(actual, pred):
     return rmse, mae, r2
 
 
+def set_env_vars():
+    os.environ["MLFLOW_URL"] = "http://localhost:5000"
+    os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://localhost:9000"
+    os.environ["AWS_ACCESS_KEY_ID"] = "admin"
+    os.environ["AWS_SECRET_ACCESS_KEY"] = "hocmap123"
+    
 
 if __name__ == "__main__":
+    set_env_vars()
     warnings.filterwarnings("ignore")
     np.random.seed(40)
 
