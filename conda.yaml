@@ -6,6 +6,6 @@ dependencies:
   - pandas>=1.0.0
   - scikit-learn=0.19.1
   - pip
-  - hyperopt
   - pip:
     - mlflow
+    - hyperopt
